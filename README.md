@@ -63,7 +63,11 @@ octoops rename config.json old-name new-name
 octoops rename --dry-run config.json old-name new-name
 ```
 
-The repo entry must live in the file you pass — extends/shared files are not searched. The state key (`<org>/<old>`) is rewritten to `<org>/<new>` so subsequent applies see no diff.
+The repo entry must live in the file you pass — extends/shared files are not searched. The config may hold either the old or the new name. The state key (`<org>/<old>`) is rewritten to `<org>/<new>` so subsequent applies see no diff.
+
+Just changing `name` in the JSON and running `apply` does **not** rename — it creates a new empty repo and leaves the old one alone. To rename declaratively, set `renamedFrom` on the entry instead and apply renames the GitHub repo (see the field below).
+
+If the new name is already taken (typically by the empty repo such a mistaken apply left behind), octoops refuses. Delete it yourself with `gh repo delete <org>/<new-name>` and rerun — octoops never deletes repos.
 
 Respects GitHub API rate limits automatically.
 
@@ -180,6 +184,7 @@ Top-level repo fields for basic settings:
 - `projects: true|false` — enable/disable repo projects
 - `issues: true|false` — enable/disable repo issues
 - `archived: true` — archive the repo (skips further reconcile). Removing this from the config (when state has it) unarchives the repo
+- `renamedFrom` — previous GitHub name of this repo. Apply renames that repo to `name` (keeping history) and moves the state entry, instead of creating a new empty repo. Skipped once state knows the new name, so it is safe to leave in the config. If neither name exists on GitHub the repo is created as usual. Only on repo entries, not on defaults
 - `init: true` — initialize the repo with a README so the default branch exists. On create, passes `--add-readme` to `gh repo create`. On an existing empty repo (no branches), creates `README.md` retroactively. GitHub names that initial branch itself (per the org's default), so if `defaultBranch` is also set and differs, octoops renames the branch to match (`rename-branch`). The rename only ever runs on the commit octoops just made — a repo with existing branches is never touched. Once initialized, recorded in state and not re-checked
 - `actionsAccess` — `"none"` | `"organization"` | `"enterprise"`. Controls which other repos' GitHub Actions workflows can access this repo's actions and reusable workflows (Settings → Actions → General → Access). Only relevant for private repos.
 - `forkPrContributorApproval` — `"all_external_contributors"` | `"first_time_contributors"` | `"first_time_contributors_new_to_github"`. Controls who must wait for approval before GitHub Actions runs on fork pull requests (Settings → Actions → General → Fork pull request workflows from outside collaborators).

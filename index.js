@@ -433,37 +433,40 @@ async function renameRepo(configPath, from, to, opts = {}) {
   const org = raw.org
   if (!org) throw new Error('config ' + resolvedConfigPath + ' has no "org" field; rename must be run against the file that declares the org and the repo')
 
+  // the config may already carry the new name (someone edited it before running rename)
   const repos = raw.repos || []
-  const idx = repos.findIndex((r) => r.name === from)
-  if (idx === -1) throw new Error('repo "' + from + '" not found in ' + resolvedConfigPath + ' (rename must run against the file that contains the repo entry)')
-
-  if (repos.some((r) => r.name === to)) {
-    throw new Error('repo "' + to + '" already exists in ' + resolvedConfigPath)
+  const fromIdx = repos.findIndex((r) => r.name === from)
+  const toIdx = repos.findIndex((r) => r.name === to)
+  if (fromIdx === -1 && toIdx === -1) {
+    throw new Error('neither "' + from + '" nor "' + to + '" found in ' + resolvedConfigPath + ' (rename must run against the file that contains the repo entry)')
+  }
+  if (fromIdx !== -1 && toIdx !== -1) {
+    throw new Error('both "' + from + '" and "' + to + '" exist in ' + resolvedConfigPath + ', keep only one of them')
   }
 
   const statePath = opts.statePath || resolvedConfigPath.replace(/\.json$/, '.state.json')
   const dry = opts.dry === true
 
-  print(dry, 'rename-repo', org, from + ' -> ' + to)
-  if (!dry) {
-    await gh(['api', `repos/${org}/${from}`, '--method', 'PATCH', '--input', '-'], {
-      body: { name: to }
-    })
-  }
+  const result = await githubRename(org, from, to, dry)
+  if (result === 'missing') throw new Error('repo ' + org + '/' + from + ' not found on GitHub')
+  if (dry) return
 
-  raw.repos[idx].name = to
-  if (!dry) {
+  if (fromIdx !== -1) {
+    repos[fromIdx].name = to
     fs.writeFileSync(resolvedConfigPath, JSON.stringify(raw, null, 2) + '\n')
-
-    const state = loadState(statePath)
-    const oldKey = org + '/' + from
-    const newKey = org + '/' + to
-    if (state[oldKey] !== undefined) {
-      state[newKey] = state[oldKey]
-      delete state[oldKey]
-      saveState(statePath, state)
-    }
   }
+
+  const state = loadState(statePath)
+  if (migrateRenameState(state, org, from, to)) saveState(statePath, state)
+}
+
+// Moves the state entry to the new key. Returns whether anything moved.
+function migrateRenameState(state, org, from, to) {
+  const oldKey = org + '/' + from
+  if (state[oldKey] === undefined) return false
+  state[org + '/' + to] = state[oldKey]
+  delete state[oldKey]
+  return true
 }
 
 async function resync(config, opts = {}) {
@@ -631,6 +634,15 @@ async function apply(config, opts = {}) {
     for (const raw of config.repos || []) {
       const repo = resolve(resolveDefaults(raw, config.defaults), presets)
       const key = config.org + '/' + repo.name
+
+      // a rename is one-shot, once state knows the new name there is nothing left to do
+      if (raw.renamedFrom && state[key] === undefined) {
+        const result = await githubRename(config.org, raw.renamedFrom, repo.name, dry)
+        if (result === 'missing') print(dry, 'skip-rename', key, raw.renamedFrom + ' not found, creating instead')
+        // migrate in memory on dry runs too so the reconcile below diffs against the right entry
+        if (migrateRenameState(state, config.org, raw.renamedFrom, repo.name) && !dry && opts.statePath) saveState(opts.statePath, state)
+      }
+
       const prev = state[key] || {}
       const done = {}
       try {
@@ -881,10 +893,11 @@ const REPO_KEYS = new Set([
   'branchProtection', 'environments', 'rulesets',
   'npm', 'pypi', 'secrets', 'security',
   'actionsAccess', 'forkPrContributorApproval', 'githubPackages',
-  'defaults', 'presets'
+  'defaults', 'presets', 'renamedFrom'
 ])
 
-const DEFAULTS_KEYS = new Set([...REPO_KEYS, 'extends'])
+// renamedFrom names one specific repo, so it makes no sense on a defaults pack
+const DEFAULTS_KEYS = new Set([...REPO_KEYS, 'extends'].filter((k) => k !== 'renamedFrom'))
 
 const REPO_ALIASES = { extends: 'defaults', inherits: 'defaults' }
 
@@ -895,6 +908,9 @@ function validateConfig(config) {
   for (const raw of config.repos || []) {
     for (const k of Object.keys(raw)) {
       if (!REPO_KEYS.has(k)) console.error('warning: unknown property "' + k + '" on repo "' + (raw.name || '?') + '"' + suggest(k, REPO_KEYS, REPO_ALIASES))
+    }
+    if (raw.renamedFrom !== undefined && raw.renamedFrom === raw.name) {
+      console.error('warning: "renamedFrom" on repo "' + raw.name + '" equals its name and is ignored')
     }
   }
   for (const name of Object.keys(config.defaults || {})) {
@@ -2649,6 +2665,42 @@ async function getRepo(org, name) {
   } catch {
     return null
   }
+}
+
+// Renames org/from to org/to on GitHub, keeping history. Returns 'renamed',
+// 'already' (GitHub has the new name) or 'missing' (neither name exists).
+// Never touches whatever sits on the new name, that is the user's call.
+async function githubRename(org, from, to, dry) {
+  if (sameName(from, to)) return 'already'
+
+  // gh api follows the redirect GitHub keeps for renamed repos, so a repo that
+  // was already renamed comes back under its new name
+  const source = await getRepo(org, from)
+  if (source && sameName(source.name, to)) return 'already'
+
+  const target = await getRepo(org, to)
+  const targetTaken = target !== null && sameName(target.name, to)
+
+  if (!source || !sameName(source.name, from)) {
+    if (source) throw new Error(org + '/' + from + ' now lives at ' + org + '/' + source.name + ', refusing to rename it to ' + to)
+    return targetTaken ? 'already' : 'missing'
+  }
+
+  if (targetTaken) {
+    throw new Error(org + '/' + to + ' already exists. If it is an empty leftover from a mistaken apply, delete it with `gh repo delete ' + org + '/' + to + '` and rerun')
+  }
+
+  print(dry, 'rename-repo', org, from + ' -> ' + to)
+  if (!dry) {
+    await gh(['api', `repos/${org}/${from}`, '--method', 'PATCH', '--input', '-'], {
+      body: { name: to }
+    })
+  }
+  return 'renamed'
+}
+
+function sameName(a, b) {
+  return a.toLowerCase() === b.toLowerCase()
 }
 
 async function createRepo(org, repo) {
