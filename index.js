@@ -397,6 +397,7 @@ function seed(config, opts = {}) {
     const existing = state[key] || {}
     if (existing.secrets) entry.secrets = existing.secrets
     if (existing.envSecrets) entry.envSecrets = existing.envSecrets
+    if (raw.renamedFrom) entry.renamedFrom = raw.renamedFrom
     if (repo.archived) entry.archived = true
     if (repo.description !== undefined) entry.description = repo.description
     if (repo.homepage !== undefined) entry.homepage = repo.homepage
@@ -635,12 +636,20 @@ async function apply(config, opts = {}) {
       const repo = resolve(resolveDefaults(raw, config.defaults), presets)
       const key = config.org + '/' + repo.name
 
-      // a rename is one-shot, once state knows the new name there is nothing left to do
-      if (raw.renamedFrom && state[key] === undefined) {
+      // a rename is one-shot, state records which renamedFrom it already handled.
+      // (not keyed on the entry existing, a mistaken apply may have left one for the new name)
+      if (raw.renamedFrom && (state[key] || {}).renamedFrom !== raw.renamedFrom) {
         const result = await githubRename(config.org, raw.renamedFrom, repo.name, dry)
-        if (result === 'missing') print(dry, 'skip-rename', key, raw.renamedFrom + ' not found, creating instead')
-        // migrate in memory on dry runs too so the reconcile below diffs against the right entry
-        if (migrateRenameState(state, config.org, raw.renamedFrom, repo.name) && !dry && opts.statePath) saveState(opts.statePath, state)
+        if (result === 'missing') {
+          print(dry, 'skip-rename', key, raw.renamedFrom + ' not found, creating instead')
+        } else {
+          // the old entry describes the repo we just renamed, so it wins over
+          // whatever a mistaken apply recorded for the empty repo under the new name.
+          // done in memory on dry runs too so the reconcile below diffs against it
+          migrateRenameState(state, config.org, raw.renamedFrom, repo.name)
+          state[key] = { ...state[key], renamedFrom: raw.renamedFrom }
+          if (!dry && opts.statePath) saveState(opts.statePath, state)
+        }
       }
 
       const prev = state[key] || {}

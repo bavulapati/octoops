@@ -61,7 +61,7 @@ reconciles actual state with desired state using `gh api` calls.
 
 ## What apply does per repo (in order)
 
-1. If `renamedFrom` is set and state has no entry for the new name, rename that repo on GitHub and move the state entry (errors if the new name is already taken)
+1. If `renamedFrom` is set and state has not recorded that rename yet, rename that repo on GitHub and move the state entry (errors if the new name is already taken)
 2. Create repo if it doesn't exist
 3. Patch description / visibility if changed
 4. Set topics
