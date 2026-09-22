@@ -1094,22 +1094,32 @@ async function reconcile(org, repo, prev, dry, done, opts) {
     current = true
   }
 
-  if (repo.init && !prev.initialized && !done.initialized) {
-    let branches = []
-    try {
-      branches = JSON.parse(await gh(['api', `repos/${org}/${repo.name}/branches`]))
-    } catch {}
-    if (branches.length === 0) {
-      print(dry, 'init-readme', `${org}/${repo.name}`)
-      if (!dry) {
-        await gh(['api', `repos/${org}/${repo.name}/contents/README.md`, '--method', 'PUT', '--input', '-'], {
-          body: {
-            message: 'Initial commit',
-            content: Buffer.from('# ' + repo.name + '\n').toString('base64')
-          }
-        })
+  if (repo.init && !prev.initialized) {
+    // the create path above sets this when gh repo create --add-readme made the initial commit
+    let initialized = done.initialized === true
+
+    if (!initialized) {
+      let branches = []
+      try {
+        branches = JSON.parse(await gh(['api', `repos/${org}/${repo.name}/branches`]))
+      } catch {}
+      if (branches.length === 0) {
+        print(dry, 'init-readme', `${org}/${repo.name}`)
+        if (!dry) {
+          await gh(['api', `repos/${org}/${repo.name}/contents/README.md`, '--method', 'PUT', '--input', '-'], {
+            body: {
+              message: 'Initial commit',
+              content: Buffer.from('# ' + repo.name + '\n').toString('base64')
+            }
+          })
+        }
+        initialized = true
       }
     }
+
+    // github picks the initial branch name itself, so rename it to whatever the config asked for
+    if (initialized && repo.defaultBranch) await renameInitialBranch(org, repo, dry)
+
     done.initialized = true
   }
 
@@ -2653,6 +2663,31 @@ async function createRepo(org, repo) {
   if (typeof repo.template === 'string') args.push('--template', repo.template)
   else if (repo.init) args.push('--add-readme')
   await gh(args)
+}
+
+async function renameInitialBranch(org, repo, dry) {
+  let branches = []
+  try {
+    branches = JSON.parse(await gh(['api', `repos/${org}/${repo.name}/branches`]))
+  } catch {}
+
+  // a dry run never made the initial commit, so there is usually no branch to inspect yet
+  if (dry) {
+    if (branches.length === 1 && branches[0].name === repo.defaultBranch) return
+    print(dry, 'rename-branch', `${org}/${repo.name}`, 'initial branch -> ' + repo.defaultBranch)
+    return
+  }
+
+  // only ever touch a freshly initialized repo, ie a single branch holding the initial commit
+  if (branches.length !== 1) return
+
+  const from = branches[0].name
+  if (from === repo.defaultBranch) return
+
+  print(dry, 'rename-branch', `${org}/${repo.name}`, from + ' -> ' + repo.defaultBranch)
+  await gh(['api', `repos/${org}/${repo.name}/branches/${from}/rename`, '--method', 'POST', '--input', '-'], {
+    body: { new_name: repo.defaultBranch }
+  })
 }
 
 function parseSecretsFile(filePath) {
