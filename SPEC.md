@@ -89,7 +89,8 @@ list, so existing configs keep working unchanged.
   `environment` counts as none on both sides. Duplicates are collapsed.
 - Only GitHub publishers bound to this repo are reconciled; other repos and other providers are
   left alone
-- An empty list is a config error. Remove the key to skip trusted publishing instead.
+- An empty list revokes every publisher this repo has on the package. Remove the key to leave
+  trusted publishing alone
 - Adds run before revokes, so an interrupted apply leaves a package with too many publishers
   rather than none
 - Requires npm 11.15.0 or newer. Earlier versions have no `--allow-publish` flag on

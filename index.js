@@ -647,9 +647,11 @@ async function apply(config, opts = {}) {
           // whatever a mistaken apply recorded for the empty repo under the new name.
           // done in memory on dry runs too so the reconcile below diffs against it
           migrateRenameState(state, config.org, raw.renamedFrom, repo.name)
-          state[key] = { ...state[key], renamedFrom: raw.renamedFrom }
-          if (!dry && opts.statePath) saveState(opts.statePath, state)
         }
+        // recorded for the missing case too, so a repo later created under the
+        // old name is not renamed onto this one
+        state[key] = { ...state[key], renamedFrom: raw.renamedFrom }
+        if (!dry && opts.statePath) saveState(opts.statePath, state)
       }
 
       const prev = state[key] || {}
@@ -2491,12 +2493,6 @@ async function reconcileNpm(org, repoName, npm, dry) {
 
   if (!tp) return ok
 
-  // an empty list would revoke every publisher on the package, which is almost
-  // always an editing slip rather than intent — delete the key to skip instead
-  if (Array.isArray(tp) && tp.length === 0) {
-    throw new Error('npm.trustedPublishing is empty for ' + org + '/' + repoName)
-  }
-
   const repository = `${org}/${repoName}`
   const seen = new Set()
   const desired = []
@@ -2529,7 +2525,7 @@ async function reconcileNpm(org, repoName, npm, dry) {
 
   // only reconcile what this entry declares: publishers bound to another repo,
   // or to a provider other than GitHub, are not ours to revoke
-  const current = listed.filter((c) => c.type === 'github' && c.repository === repository)
+  const current = listed.filter((c) => c.type === 'github' && typeof c.repository === 'string' && sameName(c.repository, repository))
 
   const { add, revoke } = planTrustedPublishers(current, desired)
 
@@ -2603,8 +2599,8 @@ function parseTrustList(out) {
     }
   }
 
-  // reading nothing out of non-empty output means a revoke-everything plan, so
-  // say so rather than letting it look like an empty package
+  // reading nothing out of non-empty output makes every declared publisher look
+  // missing, so say so rather than letting it look like an empty package
   if (!objects.length && out.trim()) {
     console.log('  warning: could not read any trusted publisher from npm output')
   }
@@ -2613,7 +2609,7 @@ function parseTrustList(out) {
 }
 
 function trustKey(entry) {
-  return [entry.repository, entry.file, entry.environment || null].join('\n')
+  return [entry.repository.toLowerCase(), entry.file, entry.environment || null].join('\n')
 }
 
 function planTrustedPublishers(current, desired) {

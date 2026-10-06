@@ -824,7 +824,7 @@ Publishers reconcile as a set keyed on `(repository, workflow, environment)`. De
 
 Only publishers this entry could have created are reconciled — GitHub publishers bound to this repo. One pointing at a different repo, or from another provider such as GitLab, is left alone rather than revoked.
 
-An empty `trustedPublishing` list is rejected rather than treated as "revoke everything" — emptying it while editing is almost always a slip. Remove the key entirely to skip trusted publishing for that package.
+An empty `trustedPublishing` list revokes every publisher this repo has on the package. Remove the key entirely to leave trusted publishing alone.
 
 Needs npm **11.15.0 or newer**. Earlier versions have no `--allow-publish` flag on `npm trust github`, so every add fails with `EUSAGE`.
 
