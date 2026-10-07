@@ -1191,8 +1191,9 @@ async function reconcile(org, repo, prev, dry, done, opts) {
 
   if (repo.security && repo.security.privateVulnerabilityReporting !== undefined && current) {
     const prevPvr = prev.security && prev.security.privateVulnerabilityReporting
-    if (prevPvr !== repo.security.privateVulnerabilityReporting || prev.private !== repo.private) {
-      if (repo.private === false && !repo.internal) {
+    if (prevPvr !== repo.security.privateVulnerabilityReporting || prev.private !== repo.private || prev.internal !== repo.internal) {
+      const isPublic = !repo.internal && (repo.private === false || (repo.private === undefined && prev.private === false))
+      if (isPublic) {
         await reconcilePrivateVulnerabilityReporting(org, repo.name, repo.security.privateVulnerabilityReporting, dry)
       } else {
         print(dry, 'skip-private-vulnerability-reporting', `${org}/${repo.name}`, 'repo is not public')
@@ -1465,7 +1466,15 @@ async function reconcilePrivateVulnerabilityReporting(org, name, enabled, dry) {
   if (current && current.enabled === enabled) return
   print(dry, 'private-vulnerability-reporting', `${org}/${name}`, enabled ? 'enabled' : 'disabled')
   if (dry) return
-  await gh(['api', `repos/${org}/${name}/private-vulnerability-reporting`, '--method', enabled ? 'PUT' : 'DELETE'])
+  try {
+    await gh(['api', `repos/${org}/${name}/private-vulnerability-reporting`, '--method', enabled ? 'PUT' : 'DELETE'])
+  } catch (err) {
+    if (/HTTP 403|HTTP 404|HTTP 422/i.test(err.message)) {
+      print(dry, 'skip-private-vulnerability-reporting', `${org}/${name}`, err.message.split('\n')[0].slice(0, 200))
+      return
+    }
+    throw err
+  }
 }
 
 async function reconcileOrgSecurity(org, security, dry) {
