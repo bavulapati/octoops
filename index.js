@@ -197,6 +197,14 @@ async function importRepo(org, name) {
     }
   } catch {}
 
+  try {
+    const pvr = JSON.parse(await gh(['api', `repos/${org}/${name}/private-vulnerability-reporting`]))
+    if (pvr && pvr.enabled) {
+      entry.security = entry.security || {}
+      entry.security.privateVulnerabilityReporting = true
+    }
+  } catch {}
+
   const { names: topics } = JSON.parse(await gh(['api', `repos/${org}/${name}/topics`]))
   if (topics.length) entry.topics = topics
 
@@ -1297,6 +1305,17 @@ async function reconcile(org, repo, prev, dry, done, opts) {
     }
   }
 
+  if (repo.security && repo.security.privateVulnerabilityReporting !== undefined) {
+    const prevPvr = prev.security && prev.security.privateVulnerabilityReporting
+    if (prevPvr !== repo.security.privateVulnerabilityReporting || prev.private !== repo.private) {
+      if (repo.private === false && !repo.internal) {
+        await reconcilePrivateVulnerabilityReporting(org, repo.name, repo.security.privateVulnerabilityReporting, dry)
+      } else {
+        print(dry, 'skip-private-vulnerability-reporting', `${org}/${repo.name}`, 'repo is not public')
+      }
+    }
+  }
+
   if (repo.actionsAccess !== undefined && repo.actionsAccess !== prev.actionsAccess) {
     await reconcileActionsAccess(org, repo.name, repo.actionsAccess, dry)
   }
@@ -1564,6 +1583,17 @@ async function reconcileCodeScanning(org, name, enabled, dry) {
     }
     throw err
   }
+}
+
+async function reconcilePrivateVulnerabilityReporting(org, name, enabled, dry) {
+  let current = null
+  try {
+    current = JSON.parse(await gh(['api', `repos/${org}/${name}/private-vulnerability-reporting`]))
+  } catch {}
+  if (current && current.enabled === enabled) return
+  print(dry, 'private-vulnerability-reporting', `${org}/${name}`, enabled ? 'enabled' : 'disabled')
+  if (dry) return
+  await gh(['api', `repos/${org}/${name}/private-vulnerability-reporting`, '--method', enabled ? 'PUT' : 'DELETE'])
 }
 
 async function reconcileOrgSecurity(org, security, dry) {
